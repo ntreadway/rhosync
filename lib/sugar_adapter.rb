@@ -58,36 +58,33 @@ class SugarAdapter < SourceAdapter
     max_results = '10000' # if set to 0 or '', this doesn't return all the results
     deleted = 0 # whether you want to retrieve deleted records, too
   
-    # puts "============\n"
-    # @client.get_module_fields(@session_id,@module_name).module_fields.each do |field|
-    #   puts field.name
-    # end
-    # puts "============\n"
-  
     @count = @client.get_entries_count(@session_id,@module_name,@query_filter,deleted).result_count
     puts "@count =#{@count}"
     
     @result = @client.get_entry_list(@session_id,@module_name,@query_filter,@order_by,offset,@select_fields,max_results,deleted);
+  
   end
-
+  
+  def sugar_to_generic_results(sugar_result)
+    p "Converting SugarCRM results to generic results"
+    generic_results=[]
+    sugar_result.entry_list.each do |entry|
+      result={}
+      result['id']=entry['id']
+      entry.name_value_list.each do |nv|
+        result[nv["name"]]=nv["value"]
+      end
+      generic_results << result
+    end
+    generic_results
+  end
+  
   def sync
     puts "SugarCRM #{@module_name} sync with #{@result.entry_list.length}"
-        
-    user_id=@source.current_user.id
-    @result.entry_list.each do |x|      
-      x.name_value_list.each do |y|
-        unless y.value.blank?
-          o=ObjectValue.new
-          o.source_id=@source.id
-          o.object=x['id']
-          o.attrib=y.name
-          o.value=y.value
-          o.user_id=user_id if @source.credential
-          o.save
-        end
-      end
-    end
+    @result=sugar_to_generic_results(@result)
+    super 
   end
+
 
   def create(name_value_list)
     puts "SugarCRM #{@module_name} create #{name_value_list.inspect.to_s}"

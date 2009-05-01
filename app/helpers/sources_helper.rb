@@ -1,6 +1,6 @@
 module SourcesHelper
   
-  def slog(e,msg,source_id,operation=nil,timing=nil)
+  def slog(e,msg,source_id=self.id,operation=nil,timing=nil)
     begin
       l=SourceLog.new
       l.source_id=source_id
@@ -11,20 +11,19 @@ module SourcesHelper
       l.timing=timing
       l.save
     rescue Exception=>e
-      p "Failed to save source log message: " + e
+      logger.debug "Failed to save source log message: " + e
     end
   end
   
   def tlog(start,operation,source_id)
     diff=(Time.new-start)
-    p "Timing "+diff.to_s
     slog(nil,"Timing: "+diff.to_s+" seconds",source_id,operation,diff)
   end
 
   # determines if the logged in users is a subscriber of the current app or 
   # admin of the current app
   def check_access(app)
-    p "checking access for user "+@current_user.login
+    logger.debug "Checking access for user "+@current_user.login
     matches_login=app.users.select{ |u| u.login==@current_user.login}
     matches_login << app.administrations.select { |a| a.user.login==@current_user.login } # let the administrators of the app in as well
     if !(app.anonymous==1) and (matches_login.nil? or matches_login.size == 0)
@@ -136,31 +135,68 @@ module SourcesHelper
     
   def process_update_type(utype)
     start=Time.new  # start timing the operation
-    objs=ObjectValue.find_by_sql("select distinct(object),blob_file_name from object_values where update_type='"+ utype +"'and source_id="+id.to_s)
-    objs.each do |x|
-      if x.object  
-        objvals=ObjectValue.find_all_by_object_and_update_type(x.object,utype)  # this has all the attribute value pairs now
-        attrvalues={}
-        attrvalues["id"]=x.object if utype!='create' # setting the ID allows it be an update or delete
-        blob_file=x.blob_file_name
-        objvals.each do |y|
-          attrvalues[y.attrib]=y.value
-          y.destroy
+    objs=ObjectValue.find_by_sql("select distinct(object) as object,blob_file_name,blob_content_type,blob_file_size from object_values where update_type='"+ utype +"'and source_id="+id.to_s)
+    if objs # check that we got some object values back
+      objs.each do |x|
+        logger.debug "Object returned is: " + x.inspect.to_s
+        if x.object  
+          objvals=ObjectValue.find_all_by_object_and_update_type(x.object,utype)  # this has all the attribute value pairs now
+          attrvalues={}
+          attrvalues["id"]=x.object if utype!='create' # setting the ID allows it be an update or delete
+          blob_file=x.blob_file_name
+          objvals.each do |y|
+            attrvalues[y.attrib]=y.value
+          end
+          # now attrvalues has the attribute values needed for the create,update,delete call
+          nvlist=make_name_value_list(attrvalues)
+          if source_adapter
+            name_value_list=eval(nvlist)
+            params="(name_value_list"+ (x.blob_file_name ? ",x.blob)" : ")")
+            eval("source_adapter." +utype +params)
+          end
+        else
+          msg="Missing object property on object value: " + x.inspect.to_s
+          logger.info msg
         end
-        # now attrvalues has the attribute values needed for the createcall
-        nvlist=make_name_value_list(attrvalues)
-        if source_adapter
-          name_value_list=eval(nvlist)
-          params="(name_value_list"+ (x.blob_file_name ? ",x.blob)" : ")")
-          eval("source_adapter." +utype +params)
-        end
-      else
-        msg="Missing an object property on the objectvalue: " + x.id.to_s
-        raise msg
-        logger.info msg
       end
+    else # got no object values back
+      msg "Failed to retrieve object values for " + utype
+      slog(nil,msg)
     end
     tlog(start,utype,self.id) # log the time to perform the particular type of operation
+  end
+  
+  def cleanup_update_type(utype)
+    objs=ObjectValue.find_by_sql("select distinct(object) as object from object_values where update_type='"+ utype +"'and source_id="+id.to_s)
+    objs.each do |x| 
+      if x.object
+        objvals=ObjectValue.find_all_by_object_and_update_type(x.object,utype)  # this has all the attribute value pairs now
+        objvals.each do |y|
+          y.destroy
+        end
+      else
+        msg="Missing object property on object value: " + x.inspect.to_s
+        p msg
+        slog(nil,msg)
+      end 
+    end   
+  end
+  
+  # grab out all ObjectValues of updatetype="Create" with object named "qparms" 
+  # for a specific user (user_id) and source (id)
+  # put those together into a hash where each attrib is the key and each value is the value
+  # return nil if there are no such objects
+  def qparms_from_object(user_id)
+    qparms=nil
+    attrs=ObjectValue.find_by_sql("select attrib,value from object_values where object='qparms' and update_type='create'and source_id="+id.to_s+" and user_id="+user_id.to_s)
+    if attrs
+      qparms={}
+      attrs.each do |x|
+        qparms[x.attrib]=x.value
+        x.destroy
+      end
+    end
+    qparms
   end
   
   def setup_client(client_id)
@@ -189,6 +225,8 @@ module SourcesHelper
     page_size = p_size.nil? ? 10000 : p_size.to_i
     last_sync_time = Time.now
     objs_to_return = []
+    user_condition="= #{current_user.id}" if current_user and current_user.id
+    user_condition ||= "is NULL"
     
     # Setup the join conditions
     object_value_join_conditions = "from object_values ov left join client_maps cm on \
@@ -197,7 +235,7 @@ module SourcesHelper
     object_value_conditions = "#{object_value_join_conditions} \
                                where ov.update_type = 'query' and \
                                  ov.source_id = #{source.id} and \
-                                 (ov.user_id = #{current_user.id} or ov.user_id is NULL) and \
+                                 ov.user_id #{user_condition} and \
                                  cm.object_value_id is NULL order by ov.object limit #{page_size}"                  
     object_value_query = "select * #{object_value_conditions}"
     
@@ -214,7 +252,7 @@ module SourcesHelper
       logger.debug "[sources_helper] ack_token: #{ack_token.inspect}, using new token: #{token.inspect}"
       
       # mark acknowledged token so we don't send it again
-      ClientMap.mark_objs_by_ack_token(ack_token)
+      ClientMap.mark_objs_by_ack_token(ack_token) if ack_token and ack_token.length > 0
       
       # find delete records
       objs_to_return.concat( ClientMap.get_delete_objs_for_client(token,page_size,client.id) )

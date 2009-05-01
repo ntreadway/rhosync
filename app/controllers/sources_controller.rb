@@ -39,7 +39,7 @@ class SourcesController < ApplicationController
       render :action=>"noaccess"
     else 
       usersub=@app.memberships.find_by_user_id(current_user.id) if current_user
-      @source.credential=usersub.credential if usersub # this variable is available in your source adapter
+      @source.credential=usersub.credential if usersub # this variable is available in your source adapter    
       @source.refresh(@current_user) if params[:refresh] || @source.needs_refresh 
       objectvalues_cmd="select * from object_values where update_type='query' and source_id=#{@source.id}"
       objectvalues_cmd << " and user_id=" + @source.credential.user.id.to_s if @source.credential
@@ -70,15 +70,19 @@ class SourcesController < ApplicationController
         # generate new token for the next set of data
         @token=@resend_token ? @resend_token : get_new_token
         # get the list of objects
-        @object_values=process_objects_for_client(@source,@client,@token,@ack_token,@resend_token,params[:p_size],@first_request)
-        
+        # if this is a queued sync source and we are doing a refresh in the queue then wait for the queued sync to happen
+        if @source.queuesync and @source.needs_refresh
+          @object_values=[]
+        else
+          @object_values=process_objects_for_client(@source,@client,@token,@ack_token,@resend_token,params[:p_size],@first_request)
+        end
         # set token depending on records returned
         # if we sent zero records, we need to keep track so the client 
         # doesn't receive the last page again
         @token=nil if @object_values.nil? or @object_values.length == 0
         
-        logger.debug "[sources_controller] Finished processing objects for client, \n
-                        token: #{@token.inspect}, last_sync_token: #{@client.last_sync_token.inspect}, \n
+        logger.debug "[sources_controller] Finished processing objects for client,
+                        token: #{@token.inspect}, last_sync_token: #{@client.last_sync_token.inspect},
                         updated_at: #{@client.updated_at}, object_values count: #{@object_values.length}"
       else
         # no client_id, just show everything
@@ -374,7 +378,11 @@ class SourcesController < ApplicationController
     
     @app=App.find_by_permalink params[:app_id] if params[:app_id]
     @source.app=@app
-
+    if @app.sources.size > 0 # default the url,login and password
+      @source.url=@app.sources[0].url
+      @source.login=@app.sources[0].login
+      @source.password=@app.sources[0].password
+    end
     respond_to do |format|
       format.html # new.html.erb
       format.xml  { render :xml => @source }
@@ -398,7 +406,7 @@ class SourcesController < ApplicationController
   # POST /sources.xml
   def create
     @source = Source.new(params[:source])
-    
+    @source.name=@source.adapter
     @app=App.find_by_permalink params["source"]["app_id"]
     @source.app=@app
     
@@ -418,7 +426,7 @@ class SourcesController < ApplicationController
   # PUT /sources/1.xml
   def update
     @app=App.find_by_permalink params["source"]["app_id"]
-    p "Application is: "+ @app.name
+    @source.name=@source.adapter
     respond_to do |format|
       begin
         if @source.update_attributes(params[:source])

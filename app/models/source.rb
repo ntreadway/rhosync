@@ -4,6 +4,7 @@ class Source < ActiveRecord::Base
   has_many :source_logs
   belongs_to :app
   attr_accessor :source_adapter,:current_user,:credential
+  validates_presence_of :name,:adapter
 
   def before_validate
     self.initadapter
@@ -30,7 +31,13 @@ class Source < ActiveRecord::Base
       raise msg
     end
     if not self.adapter.blank? 
-      @source_adapter=(Object.const_get(self.adapter)).new(self,credential)
+      begin
+        @source_adapter=(Object.const_get(self.adapter)).new(self,credential) 
+      rescue
+        msg="No such adapter class provided!"
+        p msg
+        slog(nil,msg)
+      end
     else # if source_adapter is nil it will
       @source_adapter=nil
     end
@@ -45,8 +52,27 @@ class Source < ActiveRecord::Base
     tlog(start,"ask",self.id)
     result
   end
-
+  
   def refresh(current_user)
+    p "Queuesync: " + queuesync.to_s
+    if  queuesync==true # queue up the sync/refresh task for processing by the daemon with doqueuedsync (below)
+      task=Synctask.find_or_create_by_user_id_and_source_id(current_user.id,id)
+      task.save
+      p "Queued up task for user "+current_user.login+ ", source "+name
+    else # go ahead and do it right now
+      dosync(current_user)
+    end
+  end
+  
+  def self.doqueuedsync
+    synctask=Synctask.find :first,:order=>:created_at
+    source=Source.find synctask.source_id
+    user=User.find synctask.user_id
+    source.dosync(user)  # call the method below that performs the actual sync
+    synctask.delete  # take this task out of the queye
+  end
+
+  def dosync(current_user)
     @current_user=current_user
     logger.info "Logged in as: "+ current_user.login if current_user
     
@@ -62,29 +88,45 @@ class Source < ActiveRecord::Base
       logger.info "Failed to login"
       slog(e,"can't login",self.id,"login")
     end
+    
+    # first grab out all ObjectValues of updatetype="Create" with object named "qparms"
+    # put those together into a qparms hash
+    # qparms is nil or empty if there is no such hash
+    qparms=qparms_from_object(current_user.id)
+    # must do it before the create processing below!
     begin 
       process_update_type('create')
+      cleanup_update_type('create')
     rescue Exception=>e
-      slog(e, "Failed to create",self.id)
+      slog(e, "Failed to create",self.id,"create")
+      raise e
     end 
+
     begin
       process_update_type('update')
+      cleanup_update_type('update')
     rescue Exception=>e
-      slog(e, "Failed to update",self.id)
-    end
-    begin
-      process_update_type('delete')
-    rescue Exception=>e
-      slog(e, "Failed to delete",self.id)
+      slog(e, "Failed to update",self.id,"update")
+      raise e
     end
     
+    begin
+      process_update_type('delete')
+      cleanup_update_type('delete')
+    rescue Exception=>e
+      slog(e, "Failed to delete",self.id,"delete")
+      raise e
+    end
+        
     clear_pending_records(@credential)
 
     begin  
       start=Time.new
-      source_adapter.query
+      source_adapter.qparms=qparms if qparms  # note that we must have an attribute called qparms in the source adapter for this to work!
+      source_adapter.query 
       tlog(start,"query",self.id)
     rescue Exception=>e
+      p "Failed to perform query"
       slog(e,"timed out on query",self.id)
     end
     start=Time.new

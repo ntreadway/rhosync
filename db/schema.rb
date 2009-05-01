@@ -9,7 +9,7 @@
 #
 # It's strongly recommended to check this file into your version control system.
 
-ActiveRecord::Schema.define(:version => 20090319192254) do
+ActiveRecord::Schema.define(:version => 20090501210034) do
 
   create_table "administrations", :force => true do |t|
     t.integer  "app_id"
@@ -30,15 +30,16 @@ ActiveRecord::Schema.define(:version => 20090319192254) do
 
   create_table "client_maps", :id => false, :force => true do |t|
     t.string  "client_id",       :limit => 36
-    t.integer "object_value_id", :limit => 255
+    t.integer "object_value_id"
     t.string  "db_operation"
     t.string  "token"
-    t.integer "dirty",           :limit => 1,   :default => 0
-    t.integer "ack_token",       :limit => 1,   :default => 0
+    t.integer "dirty",           :limit => 1,  :default => 0
+    t.integer "ack_token",       :limit => 1,  :default => 0
   end
 
   add_index "client_maps", ["client_id", "object_value_id"], :name => "client_map_c_id_ov_id"
   add_index "client_maps", ["client_id"], :name => "client_map_c_id"
+  add_index "client_maps", ["token"], :name => "client_map_tok"
 
   create_table "clients", :id => false, :force => true do |t|
     t.string   "client_id",       :limit => 36
@@ -72,7 +73,7 @@ ActiveRecord::Schema.define(:version => 20090319192254) do
     t.integer  "source_id"
     t.string   "object"
     t.string   "attrib"
-    t.text     "value",             :limit => 255
+    t.text     "value"
     t.integer  "pending_id"
     t.string   "update_type"
     t.integer  "user_id"
@@ -109,6 +110,15 @@ ActiveRecord::Schema.define(:version => 20090319192254) do
     t.integer  "pollinterval"
     t.integer  "priority"
     t.integer  "incremental"
+    t.boolean  "queuesync"
+    t.string   "limit"
+  end
+
+  create_table "synctasks", :force => true do |t|
+    t.integer  "source_id"
+    t.integer  "user_id"
+    t.datetime "created_at"
+    t.datetime "updated_at"
   end
 
   create_table "users", :force => true do |t|
