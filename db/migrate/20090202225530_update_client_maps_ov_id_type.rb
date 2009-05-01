@@ -4,6 +4,6 @@ class UpdateClientMapsOvIdType < ActiveRecord::Migration
   end
 
   def self.down
-    change_column :client_maps, :object_value_id, :string
+    change_column :client_maps, :object_value_id, :integer
   end
 end
